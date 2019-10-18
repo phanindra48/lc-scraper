@@ -3,8 +3,9 @@ const axios = require('axios');
 const fs = require('fs');
 const mapLimit = require('async/mapLimit');
 var request = require("request");
-const COMPANIES_FILE = 'companies.json';
 
+const COMPANIES_FILE = 'companies.json';
+const LOCKED_LIST = 'lc_locked';
 
 // Login to premium account or get the cookie value
 
@@ -204,7 +205,9 @@ async function addQuestionsToList(listId, questions, cookie, csrfToken) {
 
 
 async function init(params) {
-  if (!params.premiumCookie || !params.normalCookie) return;
+  if (!params.skipFetch && !params.premiumCookie) return;
+  // nothing to do if normal cookie isn't provided!
+  if (!params.normalCookie && !params.normalCSRFToken) return;
   try {
     // premium user cookie 
     const premiumUserCookie = params.premiumCookie;
@@ -232,6 +235,8 @@ async function init(params) {
     // get all user lists (private lists)
     const lists = await getUserLists(normalUserCookie);
     
+    console.log(`${lists.length} lists found!`);
+    
     let listMap = {};
     lists.forEach(({ name, id_hash }) => {
       listMap[name.toLowerCase()] = id_hash;
@@ -242,11 +247,17 @@ async function init(params) {
     // create lists for companies that aren't there
     const listsToCreate = companies.filter(company => !listMap[company]);
     
+    // add locked list if not created before
+    if (!listMap[LOCKED_LIST]) listsToCreate.push(LOCKED_LIST);
+    
     // Note: Dummy question is added to all lists
     const newLists = await createLists(listsToCreate, normalUserCookie, normalUserCSRFToken);
     
     listMap = { ...listMap, ...newLists };
     
+    // locked questions 
+    const lockedQuestions = new Set();
+
     // add question to each list based on the company
     let counter = 0;
     mapLimit(companies, 3, (company, cb) => {      
@@ -256,7 +267,10 @@ async function init(params) {
         !companyMap[company].questions
       ) return cb();
       // console.log(company, Object.keys(companyMap[company]));
-      const questions = companyMap[company].questions.map(q => q.questionId);
+      const questions = companyMap[company].questions.map(q => {
+        if (q.isPaidOnly) lockedQuestions.add(q.questionId);
+        return q.questionId
+      });
       addQuestionsToList(listMap[company], questions, normalUserCookie, normalUserCSRFToken)
       .then(() => {
         counter++;
@@ -268,6 +282,9 @@ async function init(params) {
       console.log(`${counter} lists updated. Check your leetcode account!!`)
     });
 
+    // Add locked questions list
+    await addQuestionsToList(listMap[LOCKED_LIST], Array.from(lockedQuestions), normalUserCookie, normalUserCSRFToken);
+    console.log(`${LOCKED_LIST} list updated`);
 
     // TODO: create lists for frequency periods that aren't there
 
